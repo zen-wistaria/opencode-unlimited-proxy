@@ -17,7 +17,7 @@ answer is short.
 | API `:8080` | `listen: 127.0.0.1:8080`, `anonymous: true` | this machine only |
 | Dashboard `:8081` | `listen: 127.0.0.1:8081` | this machine only |
 
-`LISTEN_HOST` in `stack/.env` changes both listeners at seed time. Keep the
+`LISTEN_HOST` in `stack/.env` changes both listeners on the next start. Keep the
 default unless you have set a real API key and dashboard password; `0.0.0.0`
 and `::` expose the listeners on every interface.
 | API key | `server_keys: ["local-test-key"]` | — |
@@ -37,9 +37,11 @@ Do not rely on it alone to make an internet-facing service safe.
 
 1. Set a real `server_keys` value and a real `webui.password` in
    `stack/config.json`, or through the WebUI after the first start.
-2. Restart the engine, not just the stack. `config-init` seeds the config
-   volume only when it is empty, so later seed edits are ignored until you
-   re-seed the volume. The engine also reads it only at startup:
+2. Restart the engine, not just the stack. `config-init` seeds an empty config
+   volume, then reapplies the `.env`-managed listener, credential, and WARP
+   values on every start without replacing `server_keys`. Other seed edits are
+   ignored once the volume exists. The engine also reads its config only at
+   startup:
    ```bash
    docker compose -f stack/docker-compose.yml up -d
    docker compose -f stack/docker-compose.yml restart opencode-engine

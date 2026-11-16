@@ -50,54 +50,77 @@ def engine_warp_enabled(cfg: dict) -> bool:
 def config_init_script(engine_warp: bool) -> list[str]:
     """Shell body for config-init, indented for the compose `- |` block.
 
-    The seed is installed only when the volume has no config yet. Overwriting
-    it on every start used to wipe API keys and passwords created through the
-    WebUI, because those live only in the volume's config.json.
+    A fresh volume is seeded from stack/config.json. An existing config is
+    copied forward so API keys and credentials created through the WebUI
+    survive restarts, then only the values owned by .env are rewritten.
     """
     lines = [
         "        if [ -f /vol/config.json ]; then",
-        "          echo 'config.json already exists; leaving it untouched.'",
-        "          exit 0",
-        "        fi",
+        "          cp /vol/config.json /tmp/config.json",
+        "          seeded=0",
+        "          echo 'Existing config.json found; applying .env overrides.'",
+        "        else",
+        "          seeded=1",
     ]
     if engine_warp:
         lines.extend([
-            '        if [ "$$WARP_ACCEPT_TOS" != "1" ]; then',
-            "          echo 'Cloudflare WARP terms were not accepted.' >&2",
-            "          echo 'Read https://www.cloudflare.com/application/terms/ and set WARP_ACCEPT_TOS=1 in stack/.env.' >&2",
-            "          exit 1",
-            "        fi",
-            '        if [ -n "$$WARP_SOURCE_IPV6" ]; then',
-            '          sed "s|\\"source_ipv6\\": \\"\\"|\\"source_ipv6\\": \\"$$WARP_SOURCE_IPV6\\"|" /seed.json > /tmp/config.json',
-            "        else",
-            "          cp /seed.json /tmp/config.json",
-            "        fi",
+            '          if [ "$$WARP_ACCEPT_TOS" != "1" ]; then',
+            "            echo 'Cloudflare WARP terms were not accepted.' >&2",
+            "            echo 'Read https://www.cloudflare.com/application/terms/ and set WARP_ACCEPT_TOS=1 in stack/.env.' >&2",
+            "            exit 1",
+            "          fi",
+            '          if [ -n "$$WARP_SOURCE_IPV6" ]; then',
+            '            sed "s|\\"source_ipv6\\": \\"\\"|\\"source_ipv6\\": \\"$$WARP_SOURCE_IPV6\\"|" /seed.json > /tmp/config.json',
+            "          else",
+            "            cp /seed.json /tmp/config.json",
+            "          fi",
         ])
     else:
-        lines.append("        cp /seed.json /tmp/config.json")
+        lines.append("          cp /seed.json /tmp/config.json")
     lines.extend([
+        "        fi",
         '        if [ -n "$$OPENCODE2API_SERVER_KEYS" ]; then',
         '          sed -i "s|\\"local-test-key\\"|\\"$$OPENCODE2API_SERVER_KEYS\\"|g" /tmp/config.json',
         "        fi",
         '        if [ -n "$$WEBUI_USERNAME" ]; then',
-        '          sed -i "s|\\"username\\": \\"admin\\"|\\"username\\": \\"$$WEBUI_USERNAME\\"|" /tmp/config.json',
+        '          sed -i "s|^\\(    \\"username\\": \\"\\)[^\\"]*|\\1$$WEBUI_USERNAME|" /tmp/config.json',
         "        fi",
         '        if [ -n "$$WEBUI_PASSWORD" ]; then',
-        '          sed -i "s|\\"password\\": \\"changeme-changeme\\"|\\"password\\": \\"$$WEBUI_PASSWORD\\"|" /tmp/config.json',
+        '          sed -i "s|^\\(    \\"password\\": \\"\\)[^\\"]*|\\1$$WEBUI_PASSWORD|" /tmp/config.json',
         "        fi",
-        '        listen_host="$${LISTEN_HOST:-127.0.0.1}"',
+        '        listen_host="$${LISTEN_HOST:-}"',
+        '        listen_port="$${LISTEN_PORT:-}"',
+        '        webui_port="$${WEBUI_PORT:-}"',
+        '        if [ "$$seeded" = 1 ]; then',
+        '          listen_host="$${listen_host:-127.0.0.1}"',
+        '          listen_port="$${listen_port:-8080}"',
+        '          webui_port="$${webui_port:-8081}"',
+        "        fi",
         '        case "$$listen_host" in',
         '          *:*) listen_host="[$$listen_host]" ;;',
         "        esac",
-        '        listen_port="$${LISTEN_PORT:-8080}"',
-        '        webui_port="$${WEBUI_PORT:-8081}"',
-        '        sed -i "s|\\"127.0.0.1:8080\\"|\\"$$listen_host:$$listen_port\\"|" /tmp/config.json',
-        '        sed -i "s|\\"127.0.0.1:8081\\"|\\"$$listen_host:$$webui_port\\"|" /tmp/config.json',
+        '        if [ -n "$$listen_host" ] && [ -n "$$listen_port" ]; then',
+        '          sed -i "s|^\\(  \\"listen\\": \\"\\)[^\\"]*|\\1$$listen_host:$$listen_port|" /tmp/config.json',
+        '        elif [ -n "$$listen_host" ]; then',
+        '          sed -i "s|^\\(  \\"listen\\": \\"\\)[^\\"]*\\(:[0-9]*\\"\\)|\\1$$listen_host\\2|" /tmp/config.json',
+        '        elif [ -n "$$listen_port" ]; then',
+        '          sed -i "s|^\\(  \\"listen\\": \\"[^\\"]*:\\)[0-9]*\\"|\\1$$listen_port\\"|" /tmp/config.json',
+        "        fi",
+        '        if [ -n "$$listen_host" ] && [ -n "$$webui_port" ]; then',
+        '          sed -i "s|^\\(    \\"listen\\": \\"\\)[^\\"]*|\\1$$listen_host:$$webui_port|" /tmp/config.json',
+        '        elif [ -n "$$listen_host" ]; then',
+        '          sed -i "s|^\\(    \\"listen\\": \\"\\)[^\\"]*\\(:[0-9]*\\"\\)|\\1$$listen_host\\2|" /tmp/config.json',
+        '        elif [ -n "$$webui_port" ]; then',
+        '          sed -i "s|^\\(    \\"listen\\": \\"[^\\"]*:\\)[0-9]*\\"|\\1$$webui_port\\"|" /tmp/config.json',
+        "        fi",
     ])
     if engine_warp:
         lines.extend([
+            '        if [ -n "$$WARP_SOURCE_IPV6" ]; then',
+            '          sed -i "s|^\\(    \\"source_ipv6\\": \\"\\)[^\\"]*|\\1$$WARP_SOURCE_IPV6|" /tmp/config.json',
+            "        fi",
             '        if [ -n "$$WARP_POOL_SIZE" ]; then',
-            '          sed -i "s|\\"pool_size\\": 4|\\"pool_size\\": $$WARP_POOL_SIZE|" /tmp/config.json',
+            '          sed -i "s|^\\(    \\"pool_size\\": \\)[0-9]*|\\1$$WARP_POOL_SIZE|" /tmp/config.json',
             "        fi",
         ])
     lines.append("        install -o 1000 -g 1000 -m 0644 /tmp/config.json /vol/config.json")
@@ -149,8 +172,8 @@ def compose(n_nodes: int, base_port: int, node_rotation: int, engine_warp: bool 
     w("    start_period: 15s")
     w("")
     w("services:")
-    w("  # Seeds the engine's config into its named volume on first start")
-    w("  # (bind-mounting that path breaks startup, so it is copied instead).")
+    w("  # Seeds the engine's config into its named volume on first start, then")
+    w("  # reapplies .env-managed values without replacing WebUI-created keys.")
     w("  config-init:")
     w("    image: docker.io/library/busybox:1.36")
     w("    security_opt:")
@@ -159,7 +182,7 @@ def compose(n_nodes: int, base_port: int, node_rotation: int, engine_warp: bool 
     w("      - OPENCODE2API_SERVER_KEYS=${OPENCODE2API_SERVER_KEYS:-}")
     w("      - WEBUI_USERNAME=${WEBUI_USERNAME:-}")
     w("      - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}")
-    w("      - LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}")
+    w("      - LISTEN_HOST=${LISTEN_HOST:-}")
     w("      - LISTEN_PORT=${LISTEN_PORT:-}")
     w("      - WEBUI_PORT=${WEBUI_PORT:-}")
     w("    command:")
@@ -275,8 +298,8 @@ def compose_engine_warp() -> str:
     w("# No external WARP namespaces, tinyproxy nodes, or dedupe service.")
     w("")
     w("services:")
-    w("  # Seeds the engine's config into its named volume on first start")
-    w("  # (bind-mounting that path breaks startup, so it is copied instead).")
+    w("  # Seeds the engine's config into its named volume on first start, then")
+    w("  # reapplies .env-managed values without replacing WebUI-created keys.")
     w("  config-init:")
     w("    image: docker.io/library/busybox:1.36")
     w("    security_opt:")
@@ -287,7 +310,7 @@ def compose_engine_warp() -> str:
     w("      - OPENCODE2API_SERVER_KEYS=${OPENCODE2API_SERVER_KEYS:-}")
     w("      - WEBUI_USERNAME=${WEBUI_USERNAME:-}")
     w("      - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}")
-    w("      - LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}")
+    w("      - LISTEN_HOST=${LISTEN_HOST:-}")
     w("      - LISTEN_PORT=${LISTEN_PORT:-}")
     w("      - WEBUI_PORT=${WEBUI_PORT:-}")
     w("      - WARP_POOL_SIZE=${WARP_POOL_SIZE:-}")

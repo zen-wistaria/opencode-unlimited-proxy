@@ -186,14 +186,15 @@ class EngineWarpCompose(unittest.TestCase):
         self.assertIn("security_opt:\n      - label:disable", self.text)
 
 
-class ConfigInitIsIdempotent(unittest.TestCase):
-    """config-init must never replace a volume config the WebUI has changed."""
+class ConfigInitAppliesEnvWithoutLosingKeys(unittest.TestCase):
+    """config-init must refresh .env values and keep WebUI-created keys."""
 
-    def test_both_modes_skip_when_config_exists(self):
+    def test_both_modes_copy_existing_config_forward(self):
         for engine_warp in (False, True):
             script = "\n".join(gc.config_init_script(engine_warp))
             self.assertIn("if [ -f /vol/config.json ]; then", script)
-            self.assertIn("exit 0", script)
+            self.assertIn("cp /vol/config.json /tmp/config.json", script)
+            self.assertNotIn("exit 0", script)
 
     def test_existing_config_is_checked_before_the_seed_is_installed(self):
         for engine_warp in (False, True):
@@ -204,15 +205,36 @@ class ConfigInitIsIdempotent(unittest.TestCase):
 
     def test_tos_is_only_required_when_seeding(self):
         script = "\n".join(gc.config_init_script(True))
+        marker = script.index("if [ -f /vol/config.json ]; then")
         self.assertLess(
-            script.index("if [ -f /vol/config.json ]; then"),
+            marker,
             script.index('if [ "$$WARP_ACCEPT_TOS" != "1" ]'),
+        )
+        self.assertLess(
+            script.index('if [ "$$WARP_ACCEPT_TOS" != "1" ]'),
+            script.index("        fi\n        if [ -n \"$$OPENCODE2API_SERVER_KEYS\""),
         )
 
     def test_listen_host_is_read_from_the_environment(self):
         for engine_warp in (False, True):
             script = "\n".join(gc.config_init_script(engine_warp))
-            self.assertIn('listen_host="$${LISTEN_HOST:-127.0.0.1}"', script)
+            self.assertIn('listen_host="$${LISTEN_HOST:-}"', script)
+
+    def test_seed_defaults_do_not_override_an_existing_config(self):
+        for engine_warp in (False, True):
+            script = "\n".join(gc.config_init_script(engine_warp))
+            self.assertIn('if [ "$$seeded" = 1 ]; then', script)
+            self.assertIn('listen_host="$${listen_host:-127.0.0.1}"', script)
+            self.assertIn('listen_port="$${listen_port:-8080}"', script)
+            self.assertIn('webui_port="$${webui_port:-8081}"', script)
+
+    def test_existing_listener_is_rewritten_without_replacing_server_keys(self):
+        script = "\n".join(gc.config_init_script(True))
+        self.assertIn('sed -i "s|^\\(  \\"listen\\": \\"\\)[^\\"]*|', script)
+        self.assertIn('sed -i "s|^\\(    \\"listen\\": \\"\\)[^\\"]*|', script)
+        # Existing keys are only touched where the seed still has the shipped
+        # placeholder, so a WebUI-created server_keys list survives.
+        self.assertEqual(script.count("local-test-key"), 1)
 
     def test_bare_ipv6_listen_hosts_are_bracketed(self):
         script = "\n".join(gc.config_init_script(True))
@@ -220,14 +242,18 @@ class ConfigInitIsIdempotent(unittest.TestCase):
         self.assertIn('$$listen_host:$$listen_port', script)
         self.assertIn('$$listen_host:$$webui_port', script)
 
-    def test_modes_expose_listen_host_to_config_init(self):
+    def test_modes_expose_env_to_config_init(self):
         for text in (gc.compose_engine_warp(), gc.compose(1, 18090, 86400)):
-            self.assertIn("LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}", text)
+            self.assertIn("LISTEN_HOST=${LISTEN_HOST:-}", text)
 
-    def test_bridge_volume_is_also_seeded_only_once(self):
+    def test_bridge_refreshes_env_and_keeps_existing_keys(self):
         text = (STACK / "docker-compose.bridge.yml").read_text()
-        guard = text.index("if [ -f /vol/config.json ]; then")
-        self.assertLess(guard, text.index("install -o 1000"))
+        self.assertIn("cp /vol/config.json /tmp/config.json", text)
+        self.assertLess(
+            text.index("if [ -f /vol/config.json ]; then"),
+            text.index("install -o 1000"),
+        )
+        self.assertNotIn("exit 0", text)
 
 
 class CommittedArtefactsAreInSync(unittest.TestCase):

@@ -385,11 +385,12 @@ of anything running locally:
 **Both listeners bind to `LISTEN_HOST`, which defaults to `127.0.0.1`**, the
 address used by every documented setup. Set `LISTEN_HOST=0.0.0.0` in
 `stack/.env` for all IPv4 interfaces, `::1` for IPv6 loopback, or `::` for all
-IPv6 interfaces. The setting is applied only when `config-init` seeds a fresh
-config volume. To reach it from another machine, put it behind your own TLS
-terminator or a VPN rather than widening the bind: the API is anonymous by
-design (`anonymous: true`, see above), so anything that can reach `:8080` can
-spend your quota.
+IPv6 interfaces. `config-init` reapplies the `.env`-managed values on every
+start while preserving `server_keys` created in the WebUI, so edits take effect
+after the next `docker compose up -d`. To reach it from another machine, put it
+behind your own TLS terminator or a VPN rather than widening the bind: the API
+is anonymous by design (`anonymous: true`, see above), so anything that can
+reach `:8080` can spend your quota.
 
 Two defaults are the upstream's and are meant to be changed before this is
 exposed anywhere:
@@ -408,11 +409,14 @@ docker compose up -d
 docker compose restart opencode-engine
 ```
 
-`config-init` seeds the volume only when it is empty. Later edits to
-`stack/config.json` or `stack/.env` do not replace the volume; change settings
-through the WebUI, or remove the volume to re-seed (which deletes WebUI-created
-API keys). The engine reads its config only at startup, so restart it after a
-manual import.
+`config-init` seeds an empty volume from `stack/config.json`. On every start it
+then reapplies the values owned by `.env` (`LISTEN_HOST`, `LISTEN_PORT`,
+`WEBUI_PORT`, `WEBUI_USERNAME`, `WEBUI_PASSWORD`, `WARP_SOURCE_IPV6`,
+`WARP_POOL_SIZE`) without replacing `server_keys`, so WebUI-created API keys
+survive `down`/`up`. Other edits to `stack/config.json` still do not replace the
+volume; change those through the WebUI, or remove the volume to re-seed (which
+deletes WebUI-created API keys). The engine reads its config only at startup, so
+restart it after a manual import.
 
 ## Point your tools at it
 
@@ -649,7 +653,7 @@ failing after the configured retries.
 |---|---|
 | `proxyconnect tcp: dial tcp 127.0.0.1:1809x: connect: connection refused` | Legacy external pool only: that node's proxy is down. `docker compose ps`, then `docker compose up -d tinyproxy-a`. |
 | `no healthy anonymous proxies available` | Legacy external pool only: every node failed its health check. Check WARP registration with `docker logs ofu-warp-a`. |
-| Edits to `stack/config.json` seem ignored | The engine reads `/var/lib/opencode2api/config.json` from its **named volume**, and `config-init` seeds that volume only when it is empty. Change settings through the WebUI, or re-seed: `docker compose down && docker volume rm stack_ofu-engine && docker compose up -d` (this deletes WebUI-created API keys). |
+| Edits to `stack/config.json` seem ignored | The engine reads `/var/lib/opencode2api/config.json` from its **named volume**, and `config-init` seeds that volume only when it is empty. `.env`-managed values are reapplied on every start, but other edits need the WebUI or a re-seed: `docker compose down && docker volume rm stack_ofu-engine && docker compose up -d` (this deletes WebUI-created API keys). |
 | `rename … device or resource busy` at startup | You bind-mounted the config path directly; it must be seeded by `config-init` instead. |
 | `SSL_ERROR_RX_RECORD_TOO_LONG` in the browser | You are on `https://` and/or `localhost`. Use `http://127.0.0.1:8081`. |
 | `FreeTierError` (403) | Check the **message**, not just the type — at least four different causes share it. `can only be used from within OpenCode` is a gate and `./scripts/gate-probe.py` says which one. `not available in your country` is a region block that no header fixes. See [the gates doc](docs/free-tier-gates.md#not-a-gate-the-region-block). |
@@ -799,7 +803,7 @@ NOTICE                       third-party attribution
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -v   # 155 tests, no dependencies, no stack
+python3 -m unittest discover -s tests -v   # 157 tests, no dependencies, no stack
 ```
 
 The tests cover the pool generator, the de-duplicator's decision logic, and the

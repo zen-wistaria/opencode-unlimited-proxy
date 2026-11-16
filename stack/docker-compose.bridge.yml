@@ -23,25 +23,26 @@ services:
       - -c
       - |
         if [ -f /vol/config.json ]; then
-          echo 'config.json already exists; leaving it untouched.'
-          exit 0
+          cp /vol/config.json /tmp/config.json
+          echo 'Existing config.json found; applying .env overrides.'
+        else
+          cp /seed.json /tmp/config.json
         fi
-        cp /seed.json /tmp/config.json
         # In bridge mode, bind inside the container to 0.0.0.0 so Docker port mapping reaches it.
         # LISTEN_HOST is intentionally ignored here: the container must listen on all
         # interfaces for the host-side 127.0.0.1 port mapping to work.
-        sed -i 's/"127.0.0.1:8080"/"0.0.0.0:8080"/' /tmp/config.json
-        sed -i 's/"127.0.0.1:8081"/"0.0.0.0:8081"/' /tmp/config.json
+        sed -i 's/^  "listen": "[^"]*"/  "listen": "0.0.0.0:8080"/' /tmp/config.json
+        sed -i 's/^    "listen": "[^"]*"/    "listen": "0.0.0.0:8081"/' /tmp/config.json
         # Disable engine-managed WARP (since WARP source-binding requires host namespace)
         sed -i 's/"enabled": true/"enabled": false/' /tmp/config.json
         if [ -n "$$OPENCODE2API_SERVER_KEYS" ]; then
           sed -i "s|\"local-test-key\"|\"$$OPENCODE2API_SERVER_KEYS\"|g" /tmp/config.json
         fi
         if [ -n "$$WEBUI_USERNAME" ]; then
-          sed -i "s|\"username\": \"admin\"|\"username\": \"$$WEBUI_USERNAME\"|" /tmp/config.json
+          sed -i "s|^\(    \"username\": \"\)[^\"]*|\1$$WEBUI_USERNAME|" /tmp/config.json
         fi
         if [ -n "$$WEBUI_PASSWORD" ]; then
-          sed -i "s|\"password\": \"changeme-changeme\"|\"password\": \"$$WEBUI_PASSWORD\"|" /tmp/config.json
+          sed -i "s|^\(    \"password\": \"\)[^\"]*|\1$$WEBUI_PASSWORD|" /tmp/config.json
         fi
         install -o 1000 -g 1000 -m 0644 /tmp/config.json /vol/config.json
     volumes:

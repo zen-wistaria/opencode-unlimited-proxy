@@ -22,8 +22,14 @@ services:
       - sh
       - -c
       - |
+        if [ -f /vol/config.json ]; then
+          echo 'config.json already exists; leaving it untouched.'
+          exit 0
+        fi
         cp /seed.json /tmp/config.json
-        # In bridge mode, bind inside the container to 0.0.0.0 so Docker port mapping reaches it
+        # In bridge mode, bind inside the container to 0.0.0.0 so Docker port mapping reaches it.
+        # LISTEN_HOST is intentionally ignored here: the container must listen on all
+        # interfaces for the host-side 127.0.0.1 port mapping to work.
         sed -i 's/"127.0.0.1:8080"/"0.0.0.0:8080"/' /tmp/config.json
         sed -i 's/"127.0.0.1:8081"/"0.0.0.0:8081"/' /tmp/config.json
         # Disable engine-managed WARP (since WARP source-binding requires host namespace)

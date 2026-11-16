@@ -47,6 +47,63 @@ def engine_warp_enabled(cfg: dict) -> bool:
     return bool(cfg.get("warp", {}).get("enabled", False))
 
 
+def config_init_script(engine_warp: bool) -> list[str]:
+    """Shell body for config-init, indented for the compose `- |` block.
+
+    The seed is installed only when the volume has no config yet. Overwriting
+    it on every start used to wipe API keys and passwords created through the
+    WebUI, because those live only in the volume's config.json.
+    """
+    lines = [
+        "        if [ -f /vol/config.json ]; then",
+        "          echo 'config.json already exists; leaving it untouched.'",
+        "          exit 0",
+        "        fi",
+    ]
+    if engine_warp:
+        lines.extend([
+            '        if [ "$$WARP_ACCEPT_TOS" != "1" ]; then',
+            "          echo 'Cloudflare WARP terms were not accepted.' >&2",
+            "          echo 'Read https://www.cloudflare.com/application/terms/ and set WARP_ACCEPT_TOS=1 in stack/.env.' >&2",
+            "          exit 1",
+            "        fi",
+            '        if [ -n "$$WARP_SOURCE_IPV6" ]; then',
+            '          sed "s|\\"source_ipv6\\": \\"\\"|\\"source_ipv6\\": \\"$$WARP_SOURCE_IPV6\\"|" /seed.json > /tmp/config.json',
+            "        else",
+            "          cp /seed.json /tmp/config.json",
+            "        fi",
+        ])
+    else:
+        lines.append("        cp /seed.json /tmp/config.json")
+    lines.extend([
+        '        if [ -n "$$OPENCODE2API_SERVER_KEYS" ]; then',
+        '          sed -i "s|\\"local-test-key\\"|\\"$$OPENCODE2API_SERVER_KEYS\\"|g" /tmp/config.json',
+        "        fi",
+        '        if [ -n "$$WEBUI_USERNAME" ]; then',
+        '          sed -i "s|\\"username\\": \\"admin\\"|\\"username\\": \\"$$WEBUI_USERNAME\\"|" /tmp/config.json',
+        "        fi",
+        '        if [ -n "$$WEBUI_PASSWORD" ]; then',
+        '          sed -i "s|\\"password\\": \\"changeme-changeme\\"|\\"password\\": \\"$$WEBUI_PASSWORD\\"|" /tmp/config.json',
+        "        fi",
+        '        listen_host="$${LISTEN_HOST:-127.0.0.1}"',
+        '        case "$$listen_host" in',
+        '          *:*) listen_host="[$$listen_host]" ;;',
+        "        esac",
+        '        listen_port="$${LISTEN_PORT:-8080}"',
+        '        webui_port="$${WEBUI_PORT:-8081}"',
+        '        sed -i "s|\\"127.0.0.1:8080\\"|\\"$$listen_host:$$listen_port\\"|" /tmp/config.json',
+        '        sed -i "s|\\"127.0.0.1:8081\\"|\\"$$listen_host:$$webui_port\\"|" /tmp/config.json',
+    ])
+    if engine_warp:
+        lines.extend([
+            '        if [ -n "$$WARP_POOL_SIZE" ]; then',
+            '          sed -i "s|\\"pool_size\\": 4|\\"pool_size\\": $$WARP_POOL_SIZE|" /tmp/config.json',
+            "        fi",
+        ])
+    lines.append("        install -o 1000 -g 1000 -m 0644 /tmp/config.json /vol/config.json")
+    return lines
+
+
 def compose(n_nodes: int, base_port: int, node_rotation: int, engine_warp: bool = False) -> str:
     if engine_warp:
         return compose_engine_warp()
@@ -92,8 +149,8 @@ def compose(n_nodes: int, base_port: int, node_rotation: int, engine_warp: bool 
     w("    start_period: 15s")
     w("")
     w("services:")
-    w("  # Seeds the engine's config into its named volume (bind-mounting that")
-    w("  # path breaks startup, so it is copied instead).")
+    w("  # Seeds the engine's config into its named volume on first start")
+    w("  # (bind-mounting that path breaks startup, so it is copied instead).")
     w("  config-init:")
     w("    image: docker.io/library/busybox:1.36")
     w("    security_opt:")
@@ -102,29 +159,15 @@ def compose(n_nodes: int, base_port: int, node_rotation: int, engine_warp: bool 
     w("      - OPENCODE2API_SERVER_KEYS=${OPENCODE2API_SERVER_KEYS:-}")
     w("      - WEBUI_USERNAME=${WEBUI_USERNAME:-}")
     w("      - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}")
+    w("      - LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}")
     w("      - LISTEN_PORT=${LISTEN_PORT:-}")
     w("      - WEBUI_PORT=${WEBUI_PORT:-}")
     w("    command:")
     w("      - sh")
     w("      - -c")
     w("      - |")
-    w("        cp /seed.json /tmp/config.json")
-    w('        if [ -n "$$OPENCODE2API_SERVER_KEYS" ]; then')
-    w('          sed -i "s|\\"local-test-key\\"|\\"$$OPENCODE2API_SERVER_KEYS\\"|g" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_USERNAME" ]; then')
-    w('          sed -i "s|\\"username\\": \\"admin\\"|\\"username\\": \\"$$WEBUI_USERNAME\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_PASSWORD" ]; then')
-    w('          sed -i "s|\\"password\\": \\"changeme-changeme\\"|\\"password\\": \\"$$WEBUI_PASSWORD\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$LISTEN_PORT" ]; then')
-    w('          sed -i "s|\\"127.0.0.1:8080\\"|\\"127.0.0.1:$$LISTEN_PORT\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_PORT" ]; then')
-    w('          sed -i "s|\\"127.0.0.1:8081\\"|\\"127.0.0.1:$$WEBUI_PORT\\"|" /tmp/config.json')
-    w("        fi")
-    w("        install -o 1000 -g 1000 -m 0644 /tmp/config.json /vol/config.json")
+    for line in config_init_script(engine_warp=False):
+        w(line)
     w("    volumes:")
     w("      - ./config.json:/seed.json:ro")
     w("      - ofu-engine:/vol")
@@ -232,8 +275,8 @@ def compose_engine_warp() -> str:
     w("# No external WARP namespaces, tinyproxy nodes, or dedupe service.")
     w("")
     w("services:")
-    w("  # Seeds the engine's config into its named volume (bind-mounting that")
-    w("  # path breaks startup, so it is copied instead).")
+    w("  # Seeds the engine's config into its named volume on first start")
+    w("  # (bind-mounting that path breaks startup, so it is copied instead).")
     w("  config-init:")
     w("    image: docker.io/library/busybox:1.36")
     w("    security_opt:")
@@ -244,6 +287,7 @@ def compose_engine_warp() -> str:
     w("      - OPENCODE2API_SERVER_KEYS=${OPENCODE2API_SERVER_KEYS:-}")
     w("      - WEBUI_USERNAME=${WEBUI_USERNAME:-}")
     w("      - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}")
+    w("      - LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}")
     w("      - LISTEN_PORT=${LISTEN_PORT:-}")
     w("      - WEBUI_PORT=${WEBUI_PORT:-}")
     w("      - WARP_POOL_SIZE=${WARP_POOL_SIZE:-}")
@@ -251,35 +295,8 @@ def compose_engine_warp() -> str:
     w("      - sh")
     w("      - -c")
     w("      - |")
-    w('        if [ "$$WARP_ACCEPT_TOS" != "1" ]; then')
-    w("          echo 'Cloudflare WARP terms were not accepted.' >&2")
-    w("          echo 'Read https://www.cloudflare.com/application/terms/ and set WARP_ACCEPT_TOS=1 in stack/.env.' >&2")
-    w("          exit 1")
-    w("        fi")
-    w('        if [ -n "$$WARP_SOURCE_IPV6" ]; then')
-    w('          sed "s|\\"source_ipv6\\": \\"\\"|\\"source_ipv6\\": \\"$$WARP_SOURCE_IPV6\\"|" /seed.json > /tmp/config.json')
-    w("        else")
-    w("          cp /seed.json /tmp/config.json")
-    w("        fi")
-    w('        if [ -n "$$OPENCODE2API_SERVER_KEYS" ]; then')
-    w('          sed -i "s|\\"local-test-key\\"|\\"$$OPENCODE2API_SERVER_KEYS\\"|g" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_USERNAME" ]; then')
-    w('          sed -i "s|\\"username\\": \\"admin\\"|\\"username\\": \\"$$WEBUI_USERNAME\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_PASSWORD" ]; then')
-    w('          sed -i "s|\\"password\\": \\"changeme-changeme\\"|\\"password\\": \\"$$WEBUI_PASSWORD\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$LISTEN_PORT" ]; then')
-    w('          sed -i "s|\\"127.0.0.1:8080\\"|\\"127.0.0.1:$$LISTEN_PORT\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WEBUI_PORT" ]; then')
-    w('          sed -i "s|\\"127.0.0.1:8081\\"|\\"127.0.0.1:$$WEBUI_PORT\\"|" /tmp/config.json')
-    w("        fi")
-    w('        if [ -n "$$WARP_POOL_SIZE" ]; then')
-    w('          sed -i "s|\\"pool_size\\": 4|\\"pool_size\\": $$WARP_POOL_SIZE|" /tmp/config.json')
-    w("        fi")
-    w("        install -o 1000 -g 1000 -m 0644 /tmp/config.json /vol/config.json")
+    for line in config_init_script(engine_warp=True):
+        w(line)
     w("    volumes:")
     w("      - ./config.json:/seed.json:ro")
     w("      - ofu-engine:/vol")

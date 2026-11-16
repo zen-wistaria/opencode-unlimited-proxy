@@ -382,8 +382,11 @@ of anything running locally:
 ../scripts/gate-probe.py          # baseline + controls, see --help
 ```
 
-**Both listeners bind to `127.0.0.1` by default**, which is every documented use
-of this stack. To reach it from another machine, put it behind your own TLS
+**Both listeners bind to `LISTEN_HOST`, which defaults to `127.0.0.1`**, the
+address used by every documented setup. Set `LISTEN_HOST=0.0.0.0` in
+`stack/.env` for all IPv4 interfaces, `::1` for IPv6 loopback, or `::` for all
+IPv6 interfaces. The setting is applied only when `config-init` seeds a fresh
+config volume. To reach it from another machine, put it behind your own TLS
 terminator or a VPN rather than widening the bind: the API is anonymous by
 design (`anonymous: true`, see above), so anything that can reach `:8080` can
 spend your quota.
@@ -405,8 +408,11 @@ docker compose up -d
 docker compose restart opencode-engine
 ```
 
-`config-init` re-seeds the volume from the seed config on every start, but the
-engine reads it only at startup; an edit with no restart is silently discarded.
+`config-init` seeds the volume only when it is empty. Later edits to
+`stack/config.json` or `stack/.env` do not replace the volume; change settings
+through the WebUI, or remove the volume to re-seed (which deletes WebUI-created
+API keys). The engine reads its config only at startup, so restart it after a
+manual import.
 
 ## Point your tools at it
 
@@ -643,7 +649,7 @@ failing after the configured retries.
 |---|---|
 | `proxyconnect tcp: dial tcp 127.0.0.1:1809x: connect: connection refused` | Legacy external pool only: that node's proxy is down. `docker compose ps`, then `docker compose up -d tinyproxy-a`. |
 | `no healthy anonymous proxies available` | Legacy external pool only: every node failed its health check. Check WARP registration with `docker logs ofu-warp-a`. |
-| Edits to `stack/config.json` seem ignored | The engine reads `/var/lib/opencode2api/config.json` from its **named volume** and prefers it over your file. `config-init` re-seeds it on `docker compose up -d`; to force it: `docker compose down && docker volume rm stack_ofu-engine && docker compose up -d`. |
+| Edits to `stack/config.json` seem ignored | The engine reads `/var/lib/opencode2api/config.json` from its **named volume**, and `config-init` seeds that volume only when it is empty. Change settings through the WebUI, or re-seed: `docker compose down && docker volume rm stack_ofu-engine && docker compose up -d` (this deletes WebUI-created API keys). |
 | `rename … device or resource busy` at startup | You bind-mounted the config path directly; it must be seeded by `config-init` instead. |
 | `SSL_ERROR_RX_RECORD_TOO_LONG` in the browser | You are on `https://` and/or `localhost`. Use `http://127.0.0.1:8081`. |
 | `FreeTierError` (403) | Check the **message**, not just the type — at least four different causes share it. `can only be used from within OpenCode` is a gate and `./scripts/gate-probe.py` says which one. `not available in your country` is a region block that no header fixes. See [the gates doc](docs/free-tier-gates.md#not-a-gate-the-region-block). |
@@ -651,7 +657,7 @@ failing after the configured retries.
 | `FreeUsageLimitError` (429) | Not a gate. The egress block ran out of budget, reset daily at 00:00 UTC. Check `Retry-After`; on the default mode, `/healthz` shows the WARP pool and `docker logs ofu-engine` shows exits being retired and re-registered. Raise `warp.pool_size` or `retry.max_attempts`, set a routed IPv6 `/64`, or wait for the reset. See [the quota axis](docs/free-tier-gates.md#not-a-gate-the-quota-axis). |
 | `[400] … messages[N].reasoning` on multi-turn chats | Known conversion bug in the upstream engine on reasoning models. It was observed on `cat-jam-free`, which has since been retired off the tier, so the model that triggered it is gone but the class of model is not: `ll-alpha-free` and `beam-free` both reason today. I have not seen this 400 reproduce on them, so treat it as a watch item rather than a known outcome. Pick a non-reasoning model for multi-turn if you can (none currently on the free tier), or disable the reasoning field client-side. `space-bunny-free` was the previous recommendation but is now deprecated upstream. |
 | A reasoning model returns **HTTP 200 with empty content** | The budget went to reasoning, not the answer. This is not a gateway fault — the request succeeded. `big-pickle` spent 55 of 60 tokens on reasoning across 4 of 6 probes and returned nothing; at `max_tokens: 200` it was 0 of 4. `ll-alpha-free` on multi-turn returned 200 with empty content at `max_tokens: 120`, and the correct answer at 300. `beam-free` reasons as well. The reasoning tokens are not hidden: `/v1/messages` returns them as explicit `thinking` blocks and `/v1/responses` reports `incomplete_details`. Raise `max_tokens`, or pick a model with lower reasoning overhead. `space-bunny-free` (which reported `reasoning_tokens: 0`) is now deprecated upstream and no longer on the free tier. |
-| Node restarts in a loop, `bind: address already in use` | Something else holds 8080/8081. In the default mode the engine uses host networking, so free the ports or set `LISTEN_PORT` / `WEBUI_PORT` in `stack/.env`. In bridge mode, check the published host-loopback ports with `docker compose -f stack/docker-compose.bridge.yml ps`. |
+| Node restarts in a loop, `bind: address already in use` | Something else holds 8080/8081. In the default mode the engine uses host networking, so free the ports or set `LISTEN_HOST`, `LISTEN_PORT`, and `WEBUI_PORT` in `stack/.env` before the first seed. In bridge mode, check the published host-loopback ports with `docker compose -f stack/docker-compose.bridge.yml ps`. |
 
 ## Legal and terms of service
 
@@ -793,7 +799,7 @@ NOTICE                       third-party attribution
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -v   # 148 tests, no dependencies, no stack
+python3 -m unittest discover -s tests -v   # 155 tests, no dependencies, no stack
 ```
 
 The tests cover the pool generator, the de-duplicator's decision logic, and the

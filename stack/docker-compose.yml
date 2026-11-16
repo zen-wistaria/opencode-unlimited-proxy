@@ -3,8 +3,8 @@
 # No external WARP namespaces, tinyproxy nodes, or dedupe service.
 
 services:
-  # Seeds the engine's config into its named volume (bind-mounting that
-  # path breaks startup, so it is copied instead).
+  # Seeds the engine's config into its named volume on first start
+  # (bind-mounting that path breaks startup, so it is copied instead).
   config-init:
     image: docker.io/library/busybox:1.36
     security_opt:
@@ -15,6 +15,7 @@ services:
       - OPENCODE2API_SERVER_KEYS=${OPENCODE2API_SERVER_KEYS:-}
       - WEBUI_USERNAME=${WEBUI_USERNAME:-}
       - WEBUI_PASSWORD=${WEBUI_PASSWORD:-}
+      - LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}
       - LISTEN_PORT=${LISTEN_PORT:-}
       - WEBUI_PORT=${WEBUI_PORT:-}
       - WARP_POOL_SIZE=${WARP_POOL_SIZE:-}
@@ -22,6 +23,10 @@ services:
       - sh
       - -c
       - |
+        if [ -f /vol/config.json ]; then
+          echo 'config.json already exists; leaving it untouched.'
+          exit 0
+        fi
         if [ "$$WARP_ACCEPT_TOS" != "1" ]; then
           echo 'Cloudflare WARP terms were not accepted.' >&2
           echo 'Read https://www.cloudflare.com/application/terms/ and set WARP_ACCEPT_TOS=1 in stack/.env.' >&2
@@ -41,12 +46,14 @@ services:
         if [ -n "$$WEBUI_PASSWORD" ]; then
           sed -i "s|\"password\": \"changeme-changeme\"|\"password\": \"$$WEBUI_PASSWORD\"|" /tmp/config.json
         fi
-        if [ -n "$$LISTEN_PORT" ]; then
-          sed -i "s|\"127.0.0.1:8080\"|\"127.0.0.1:$$LISTEN_PORT\"|" /tmp/config.json
-        fi
-        if [ -n "$$WEBUI_PORT" ]; then
-          sed -i "s|\"127.0.0.1:8081\"|\"127.0.0.1:$$WEBUI_PORT\"|" /tmp/config.json
-        fi
+        listen_host="$${LISTEN_HOST:-127.0.0.1}"
+        case "$$listen_host" in
+          *:*) listen_host="[$$listen_host]" ;;
+        esac
+        listen_port="$${LISTEN_PORT:-8080}"
+        webui_port="$${WEBUI_PORT:-8081}"
+        sed -i "s|\"127.0.0.1:8080\"|\"$$listen_host:$$listen_port\"|" /tmp/config.json
+        sed -i "s|\"127.0.0.1:8081\"|\"$$listen_host:$$webui_port\"|" /tmp/config.json
         if [ -n "$$WARP_POOL_SIZE" ]; then
           sed -i "s|\"pool_size\": 4|\"pool_size\": $$WARP_POOL_SIZE|" /tmp/config.json
         fi

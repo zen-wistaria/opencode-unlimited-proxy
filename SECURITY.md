@@ -4,7 +4,8 @@
 
 This is a **local, single-user gateway**. It runs on your machine, serves your
 tools, and spends nobody's money but your own. It is not built to be exposed to
-the internet, and the defaults reflect that: both listeners bind `127.0.0.1`.
+the internet, and the defaults reflect that: both listeners bind `127.0.0.1`
+unless you explicitly change `LISTEN_HOST` in `stack/.env`.
 
 Read this section before exposing it anywhere. It is short because the honest
 answer is short.
@@ -15,6 +16,10 @@ answer is short.
 |---|---|---|
 | API `:8080` | `listen: 127.0.0.1:8080`, `anonymous: true` | this machine only |
 | Dashboard `:8081` | `listen: 127.0.0.1:8081` | this machine only |
+
+`LISTEN_HOST` in `stack/.env` changes both listeners at seed time. Keep the
+default unless you have set a real API key and dashboard password; `0.0.0.0`
+and `::` expose the listeners on every interface.
 | API key | `server_keys: ["local-test-key"]` | — |
 | Dashboard login | `admin` / `changeme-changeme` | — |
 
@@ -31,14 +36,17 @@ Do not rely on it alone to make an internet-facing service safe.
 ## Before exposing this to another machine
 
 1. Set a real `server_keys` value and a real `webui.password` in
-   `stack/config.json`.
-2. Restart the engine, not just the stack. `config-init` re-seeds the config
-   volume on every `up`, but the engine only reads it at startup:
+   `stack/config.json`, or through the WebUI after the first start.
+2. Restart the engine, not just the stack. `config-init` seeds the config
+   volume only when it is empty, so later seed edits are ignored until you
+   re-seed the volume. The engine also reads it only at startup:
    ```bash
    docker compose -f stack/docker-compose.yml up -d
    docker compose -f stack/docker-compose.yml restart opencode-engine
    ```
-   An edit with no restart is silently discarded.
+   An edit with no restart is silently discarded. Re-seeding deletes
+   WebUI-created API keys; import the volume config instead if you need to keep
+   them.
 3. Put it behind a TLS terminator or a VPN. Do not expose a plaintext HTTP
    listener holding an admin surface.
 4. Confirm what is actually listening — `network_mode: host` means the engine

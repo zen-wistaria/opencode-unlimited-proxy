@@ -186,6 +186,50 @@ class EngineWarpCompose(unittest.TestCase):
         self.assertIn("security_opt:\n      - label:disable", self.text)
 
 
+class ConfigInitIsIdempotent(unittest.TestCase):
+    """config-init must never replace a volume config the WebUI has changed."""
+
+    def test_both_modes_skip_when_config_exists(self):
+        for engine_warp in (False, True):
+            script = "\n".join(gc.config_init_script(engine_warp))
+            self.assertIn("if [ -f /vol/config.json ]; then", script)
+            self.assertIn("exit 0", script)
+
+    def test_existing_config_is_checked_before_the_seed_is_installed(self):
+        for engine_warp in (False, True):
+            script = "\n".join(gc.config_init_script(engine_warp))
+            guard = script.index("if [ -f /vol/config.json ]; then")
+            install = script.index("install -o 1000")
+            self.assertLess(guard, install)
+
+    def test_tos_is_only_required_when_seeding(self):
+        script = "\n".join(gc.config_init_script(True))
+        self.assertLess(
+            script.index("if [ -f /vol/config.json ]; then"),
+            script.index('if [ "$$WARP_ACCEPT_TOS" != "1" ]'),
+        )
+
+    def test_listen_host_is_read_from_the_environment(self):
+        for engine_warp in (False, True):
+            script = "\n".join(gc.config_init_script(engine_warp))
+            self.assertIn('listen_host="$${LISTEN_HOST:-127.0.0.1}"', script)
+
+    def test_bare_ipv6_listen_hosts_are_bracketed(self):
+        script = "\n".join(gc.config_init_script(True))
+        self.assertIn('*:*) listen_host="[$$listen_host]"', script)
+        self.assertIn('$$listen_host:$$listen_port', script)
+        self.assertIn('$$listen_host:$$webui_port', script)
+
+    def test_modes_expose_listen_host_to_config_init(self):
+        for text in (gc.compose_engine_warp(), gc.compose(1, 18090, 86400)):
+            self.assertIn("LISTEN_HOST=${LISTEN_HOST:-127.0.0.1}", text)
+
+    def test_bridge_volume_is_also_seeded_only_once(self):
+        text = (STACK / "docker-compose.bridge.yml").read_text()
+        guard = text.index("if [ -f /vol/config.json ]; then")
+        self.assertLess(guard, text.index("install -o 1000"))
+
+
 class CommittedArtefactsAreInSync(unittest.TestCase):
     """The committed docker-compose.yml must be what the generator produces.
 
